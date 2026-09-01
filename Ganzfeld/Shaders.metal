@@ -3,12 +3,14 @@ using namespace metal;
 
 // Must match ShaderUniforms in Renderer.swift.
 struct Uniforms {
-    float4 color;      // premultiplied-alpha output for the treated eye
-    uint targetEye;    // render target array index of the treated eye
+    float4 color;      // premultiplied-alpha output for the treated eye(s)
+    uint targetEye;    // render target array index of the treated eye, or 2 for both
     uint pad0;
     uint pad1;
     uint pad2;
 };
+
+constant uint kBothEyes = 2;
 
 struct VertexOut {
     float4 position [[position]];
@@ -32,8 +34,9 @@ vertex VertexOut ganzfeldVertex(uint vertexID [[vertex_id]],
 
 // The layer is composited over passthrough with premultiplied alpha:
 //   result = color.rgb + (1 - color.a) * passthrough
-// The untreated eye gets (0,0,0,0), i.e. untouched passthrough.
+// Untreated eyes get (0,0,0,0), i.e. untouched passthrough.
 fragment float4 ganzfeldFragment(uint layer [[render_target_array_index]],
                                  constant Uniforms &uniforms [[buffer(0)]]) {
-    return (layer == uniforms.targetEye) ? uniforms.color : float4(0.0);
+    bool treated = (uniforms.targetEye == kBothEyes) || (layer == uniforms.targetEye);
+    return treated ? uniforms.color : float4(0.0);
 }

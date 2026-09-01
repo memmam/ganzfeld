@@ -3,15 +3,27 @@ import Observation
 import os
 import simd
 
-/// Which eye receives the color treatment. The other eye keeps camera passthrough.
-/// View 0 of the stereo drawable is the left eye, view 1 the right eye.
+/// Which eye(s) receive the color treatment. Untreated eyes keep camera
+/// passthrough. View 0 of the stereo drawable is the left eye, view 1 the
+/// right eye; `bothEyesTarget` is a sentinel the shader treats as matching
+/// every view.
 enum TreatedEye: String, CaseIterable, Identifiable {
     case left
     case right
+    case both
+
+    static let bothEyesTarget: UInt32 = 2
 
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
-    var viewIndex: UInt32 { self == .left ? 0 : 1 }
+
+    var targetValue: UInt32 {
+        switch self {
+        case .left: return 0
+        case .right: return 1
+        case .both: return Self.bothEyesTarget
+        }
+    }
 }
 
 /// How the color is composited over the treated eye.
@@ -33,18 +45,29 @@ enum OverlayMode: String, CaseIterable, Identifiable {
 /// the untreated eye is always written as (0, 0, 0, 0) so passthrough shows.
 struct RenderParams: Sendable {
     var rgba: SIMD4<Float> = SIMD4(1, 0, 0, 1)
-    var targetEye: UInt32 = TreatedEye.right.viewIndex
+    var targetEye: UInt32 = TreatedEye.right.targetValue
 }
 
 @MainActor
 @Observable
 final class AppModel {
     static let immersiveSpaceID = "GanzfeldSpace"
+    static let controlWindowID = "ControlPanel"
 
     /// Thread-safe handoff of UI state to the render loop.
     let renderParams = OSAllocatedUnfairLock(initialState: RenderParams())
 
+    let controllerInput = ControllerInput()
+
     var overlayActive = false
+
+    /// Tracked from ControlPanelView's onAppear/onDisappear.
+    var controlWindowOpen = false
+
+    /// Window actions stashed from the control panel's environment so the
+    /// controller handler can reopen the window after it has been dismissed.
+    @ObservationIgnored var openControlWindow: OpenWindowAction?
+    @ObservationIgnored var dismissControlWindow: DismissWindowAction?
 
     var treatedEye: TreatedEye = .right { didSet { pushParams() } }
     var mode: OverlayMode = .solid { didSet { pushParams() } }
@@ -56,6 +79,24 @@ final class AppModel {
 
     init() {
         pushParams()
+        controllerInput.onToggleUI = { [weak self] in
+            self?.toggleControlWindow()
+        }
+        controllerInput.start()
+    }
+
+    /// Show/hide the control window, driven by a paired game controller
+    /// (e.g. PS VR2 Sense) so the UI can be dismissed during a session and
+    /// summoned back without hand input.
+    func toggleControlWindow() {
+        if controlWindowOpen {
+            // Never close the last scene: with no window and no immersive
+            // space the app would suspend and controller input would stop.
+            guard overlayActive else { return }
+            dismissControlWindow?(id: Self.controlWindowID)
+        } else {
+            openControlWindow?(id: Self.controlWindowID)
+        }
     }
 
     /// The premultiplied color that lands in the layer for the treated eye.
@@ -80,7 +121,7 @@ final class AppModel {
             rgba = SIMD4((SIMD3<Float>(repeating: 1) - c) * k, k)
         }
 
-        let params = RenderParams(rgba: rgba, targetEye: treatedEye.viewIndex)
+        let params = RenderParams(rgba: rgba, targetEye: treatedEye.targetValue)
         renderParams.withLock { $0 = params }
     }
 }

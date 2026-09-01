@@ -3,7 +3,7 @@
 An Apple Vision Pro app for monocular color experiments: one eye sees normal
 camera passthrough while the other eye is treated with a custom RGB color —
 either as an opaque color surface or as an additive/subtractive overlay on
-top of passthrough.
+top of passthrough. A both-eyes mode treats the full visual field instead.
 
 Useful for ganzfeld-style perceptual experiments, binocular rivalry demos,
 and color adaptation experiments.
@@ -42,18 +42,30 @@ cyan while darkening it).
 
 - **Start/Stop Overlay** — opens/closes the mixed immersive space. The
   control window stays visible and adjustable while the overlay runs.
-- **Treated eye** — Left or Right (stereo view 0 = left, view 1 = right).
+- **Treated eye** — Left, Right, or Both (stereo view 0 = left, view 1 =
+  right; Both treats the entire visual field).
 - **Mode** — Solid / Additive / Subtractive.
 - **R / G / B sliders** — the custom color (shown as 0–255 and hex).
 - **Intensity** — effect strength from 0 to 100%.
 
 All controls take effect live while the overlay is running.
 
+### Game controller UI toggle
+
+With a paired game controller, pressing **Options/Menu** (or Create/Home)
+hides the control window while the overlay runs, and summons it back —
+useful for both-eyes or solid sessions where the floating window would
+intrude on the visual field. PS VR2 Sense controllers pair with Apple
+Vision Pro on visionOS 26 or later (Settings → Bluetooth); any standard
+Bluetooth gamepad also works. The toggle is ignored while the overlay is
+stopped so the app never loses its last scene.
+
 ## Requirements
 
 - Xcode 16 or later
 - visionOS 2.0+ (Metal rendering with passthrough requires visionOS 2's
-  mixed-immersion Metal support)
+  mixed-immersion Metal support); visionOS 26+ for PS VR2 Sense controller
+  pairing (other Bluetooth gamepads work on visionOS 2)
 - A physical Apple Vision Pro is strongly recommended — the simulator
   renders a single view and shows no real passthrough, so the per-eye
   behavior can only be evaluated on device.

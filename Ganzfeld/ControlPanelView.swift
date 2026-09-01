@@ -4,6 +4,8 @@ struct ControlPanelView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         @Bindable var model = appModel
@@ -22,6 +24,10 @@ struct ControlPanelView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(appModel.overlayActive ? .red : .green)
+
+                    Text("While the overlay runs, press Options/Menu on a paired game controller (e.g. PS VR2 Sense) to hide or show this window.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Treated Eye") {
@@ -31,9 +37,13 @@ struct ControlPanelView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text("The other eye keeps unmodified camera passthrough.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        appModel.treatedEye == .both
+                            ? "Both eyes are treated — no passthrough reference eye."
+                            : "The other eye keeps unmodified camera passthrough."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
 
                 Section("Mode") {
@@ -77,6 +87,14 @@ struct ControlPanelView: View {
                 }
             }
             .navigationTitle("Ganzfeld")
+        }
+        .onAppear {
+            appModel.controlWindowOpen = true
+            appModel.openControlWindow = openWindow
+            appModel.dismissControlWindow = dismissWindow
+        }
+        .onDisappear {
+            appModel.controlWindowOpen = false
         }
     }
 
