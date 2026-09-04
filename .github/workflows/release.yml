@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (leave empty to build the current ref)'
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # A tag that does not pass its own tests should not become a release.
+  verify:
+    name: Verify
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check project integrity
+        run: |
+          python3 .github/scripts/check_project.py
+          python3 .github/scripts/check_shader_contract.py
+
+      - name: Resolve a visionOS simulator
+        id: simulator
+        run: echo "udid=$(python3 .github/scripts/visionos_simulator.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        env:
+          NSUnbufferedIO: YES
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Ganzfeld.xcodeproj \
+            -scheme Ganzfeld \
+            -configuration Debug \
+            -destination "platform=visionOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO
+
+  archive:
+    name: Archive
+    needs: verify
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Read the marketing version from the project
+        id: version
+        run: |
+          version=$(xcodebuild -project Ganzfeld.xcodeproj -target Ganzfeld \
+            -showBuildSettings 2>/dev/null \
+            | awk -F' = ' '/ MARKETING_VERSION =/ {print $2; exit}')
+          echo "marketing=${version:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Marketing version: ${version:-unknown}"
+
+      # Unsigned: there is no distribution certificate in CI, so this produces
+      # an archive to inspect or re-sign locally, not something installable.
+      - name: Build an unsigned archive
+        env:
+          NSUnbufferedIO: YES
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Ganzfeld.xcodeproj \
+            -scheme Ganzfeld \
+            -configuration Release \
+            -destination 'generic/platform=visionOS' \
+            -archivePath "${RUNNER_TEMP}/Ganzfeld.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee xcodebuild-archive.log
+
+      - name: Package the archive
+        id: package
+        run: |
+          set -euo pipefail
+          name="Ganzfeld-${GITHUB_REF_NAME}-unsigned.xcarchive.zip"
+          ditto -c -k --keepParent "${RUNNER_TEMP}/Ganzfeld.xcarchive" "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "$name" | tee "${name}.sha256"
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ganzfeld-unsigned-archive
+          path: |
+            ${{ steps.package.outputs.name }}
+            ${{ steps.package.outputs.name }}.sha256
+          retention-days: 90
+
+      - name: Attach the archive to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes=$(printf '%s\n' \
+            "Ganzfeld ${{ steps.version.outputs.marketing }} (${GITHUB_REF_NAME})." \
+            "" \
+            "The attached archive is **unsigned** — CI has no distribution" \
+            "certificate. Re-sign it locally, or build from source in Xcode," \
+            "before installing on an Apple Vision Pro.")
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" \
+              "${{ steps.package.outputs.name }}" \
+              "${{ steps.package.outputs.name }}.sha256" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              "${{ steps.package.outputs.name }}" \
+              "${{ steps.package.outputs.name }}.sha256" \
+              --title "Ganzfeld ${GITHUB_REF_NAME}" \
+              --notes "$notes" \
+              --verify-tag
+          fi

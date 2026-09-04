@@ -1,0 +1,5 @@
+# macos-26 became generally available for GitHub-hosted runners in February
+# 2026; actionlint's built-in label list lags behind, so declare it here.
+self-hosted-runner:
+  labels:
+    - macos-26

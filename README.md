@@ -97,6 +97,45 @@ needed, and run. No special entitlements are required: the app uses only
 `WorldTrackingProvider` for the device pose (no authorization prompt) and
 never accesses camera imagery.
 
+## Tests and CI
+
+The unit tests live in `GanzfeldTests/` and run against the app target on a
+visionOS simulator (`xcodebuild test -scheme Ganzfeld`, or ⌘U in Xcode). They
+cover the parts of the app that can be wrong without crashing:
+
+- **Colour maths** — the sRGB→linear transfer function against independently
+  computed reference values, and the premultiplied output of each mode against
+  the table above.
+- **Compositing invariants** — the result the treated eye actually receives,
+  swept over colours, intensities and passthrough radiances: intensity 0 is
+  the identity in every mode, additive never darkens, subtractive never
+  brightens and attenuates every channel by the same factor, solid at 100% is
+  the colour itself.
+- **Shader contract** — that `ShaderUniforms` and Metal's `Uniforms` have the
+  same layout, checked both by `MemoryLayout` and by a source-level check that
+  runs without a Mac.
+- **Shader behaviour** — the real `ganzfeldVertex`/`ganzfeldFragment` pair
+  rendered into an offscreen target with the layer's pixel formats, asserting
+  that each eye selection paints exactly the intended view and that a solid
+  colour reads back as the hex the swatch shows.
+- **State machine** — that every control republishes to the render thread
+  immediately, that a stale renderer's invalidation cannot stop its successor's
+  session, and that the control window is never hidden when doing so would
+  leave the app with no scenes at all.
+
+GitHub Actions runs, on every push and pull request:
+
+| Workflow | Job | What it does |
+|---|---|---|
+| `ci.yml` | Project integrity | Parses `project.pbxproj`, checks the shared scheme and the Metal/Swift contract, lints the workflows — on Linux, in seconds |
+| `ci.yml` | Unit tests | The suite above on a visionOS simulator, with coverage and warnings in the run summary |
+| `ci.yml` | Device build | Release build against the visionOS **device** SDK on both macOS 15 (Xcode 16) and macOS 26 |
+| `ci.yml` | Code quality | `Shaders.metal` compiled with `-Wall -Werror` for both SDKs, plus an advisory `swift-format` report |
+| `release.yml` | Verify → Archive | On a `v*` tag: re-runs the tests, then builds an **unsigned** `.xcarchive` and attaches it to the release |
+
+Nothing in CI is signed — there is no distribution certificate — so the release
+archive is for inspection or local re-signing, not for installing directly.
+
 ## Caveats
 
 - Hands may "punch through" the solid surface in the treated eye — that is

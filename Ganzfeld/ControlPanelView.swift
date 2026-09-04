@@ -80,7 +80,7 @@ struct ControlPanelView: View {
                                 RoundedRectangle(cornerRadius: 8)
                                     .strokeBorder(.secondary.opacity(0.5))
                             )
-                        Text(hexString)
+                        Text(appModel.hexString)
                             .font(.system(.body, design: .monospaced))
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -105,7 +105,7 @@ struct ControlPanelView: View {
                 .frame(width: 24, alignment: .leading)
             Slider(value: value, in: 0...1)
                 .tint(tint)
-            Text("\(Int((value.wrappedValue * 255).rounded()))")
+            Text("\(AppModel.displayByte(value.wrappedValue))")
                 .monospacedDigit()
                 .frame(width: 56, alignment: .trailing)
         }
@@ -120,15 +120,6 @@ struct ControlPanelView: View {
         case .subtractive:
             return "Dims passthrough in proportion to the color's luminance. visionOS compositing can't remove individual color channels, so the attenuation is neutral — never brighter than passthrough."
         }
-    }
-
-    private var hexString: String {
-        String(
-            format: "#%02X%02X%02X",
-            Int((appModel.red * 255).rounded()),
-            Int((appModel.green * 255).rounded()),
-            Int((appModel.blue * 255).rounded())
-        )
     }
 
     private func toggleOverlay() async {
