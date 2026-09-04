@@ -32,8 +32,9 @@ enum Reference {
 }
 
 extension SIMD4 where Scalar == Float {
-    var rgb: SIMD3<Float> { SIMD3(x, y, z) }
-    var doubles: SIMD4<Double> { SIMD4(Double(x), Double(y), Double(z), Double(w)) }
+    var rgb: SIMD3<Float> { SIMD3<Float>(x, y, z) }
+    // Inside this extension a bare `SIMD4` would mean `SIMD4<Float>`.
+    var doubles: SIMD4<Double> { SIMD4<Double>(Double(x), Double(y), Double(z), Double(w)) }
 }
 
 /// Colours (as sRGB slider values) that between them exercise the achromatic
