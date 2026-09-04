@@ -24,6 +24,7 @@ struct ControlPanelView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(appModel.overlayActive ? .red : .green)
+                    .disabled(appModel.overlayTransition)
 
                     Text("While the overlay runs, press Options/Menu on a paired game controller (e.g. PS VR2 Sense) to hide or show this window.")
                         .font(.footnote)
@@ -113,11 +114,11 @@ struct ControlPanelView: View {
     private var modeDescription: String {
         switch appModel.mode {
         case .solid:
-            return "Replaces the treated eye entirely with an opaque color surface."
+            return "Opaque color surface at 100% intensity; lower intensity cross-fades toward passthrough."
         case .additive:
-            return "Adds the color on top of passthrough in the treated eye."
+            return "Adds the color's light on top of passthrough in the treated eye."
         case .subtractive:
-            return "Darkens passthrough toward the color's complement, approximating a subtractive filter."
+            return "Dims passthrough in proportion to the color's luminance. visionOS compositing can't remove individual color channels, so the attenuation is neutral — never brighter than passthrough."
         }
     }
 
@@ -131,15 +132,21 @@ struct ControlPanelView: View {
     }
 
     private func toggleOverlay() async {
+        // Re-entrancy guard: a second tap while an open/dismiss is awaiting
+        // would otherwise issue a duplicate request, and the duplicate's
+        // error would desync overlayActive from the space's real state.
+        guard !appModel.overlayTransition else { return }
+        appModel.overlayTransition = true
+        defer { appModel.overlayTransition = false }
+
         if appModel.overlayActive {
-            await dismissImmersiveSpace()
+            // Clear before the await so nothing (e.g. the controller window
+            // toggle) acts on a stale "overlay running" during the dismissal.
             appModel.overlayActive = false
+            await dismissImmersiveSpace()
         } else {
-            switch await openImmersiveSpace(id: AppModel.immersiveSpaceID) {
-            case .opened:
+            if case .opened = await openImmersiveSpace(id: AppModel.immersiveSpaceID) {
                 appModel.overlayActive = true
-            default:
-                appModel.overlayActive = false
             }
         }
     }

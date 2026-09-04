@@ -22,21 +22,34 @@ renderer draws a fullscreen triangle amplified across both stereo views:
 
 ### Modes
 
-Given color `C` (RGB sliders) and intensity `k`:
+Given color `C` (the RGB sliders, converted from sRGB to linear light before
+any math) and intensity `k`, where `Y(C)` is `C`'s Rec. 709 luminance:
 
 | Mode | Layer output (premultiplied) | Result seen by the treated eye |
 |---|---|---|
-| Solid | `(k·C, 1)` | Opaque color surface, passthrough fully replaced |
+| Solid | `(k·C, k)` | `k·C + (1−k)·passthrough` — opaque color at 100%, cross-fading to passthrough below |
 | Additive | `(k·C, 0)` | `passthrough + k·C` — exact additive light |
-| Subtractive | `(k·(1−C), k)` | `(1−k)·passthrough + k·(1−C)` — darkens toward the complement |
+| Subtractive | `(0, k·Y(C))` | `(1−k·Y(C))·passthrough` — neutral attenuation weighted by the color's luminance |
+
+In every mode, intensity 0% means untouched passthrough.
 
 **Note on subtractive:** true per-channel subtraction (`passthrough − k·C`)
-is impossible on visionOS because apps cannot read passthrough pixels and
-the system compositor only supports premultiplied-alpha "source-over"
-blending, which cannot produce negative contributions. The subtractive mode
-approximates a physical color filter by blending passthrough toward the
-complement of the chosen color (e.g. subtracting red pulls the image toward
-cyan while darkening it).
+is impossible on visionOS: apps cannot read passthrough pixels, and the
+system compositor's premultiplied-alpha "source-over" blend can only scale
+all channels by one scalar alpha and add non-negative light. Any added
+constant term can end up brighter than the passthrough behind it (which is
+how an earlier version of this mode could *brighten* the treated eye), so
+subtractive adds nothing and only attenuates: the chosen color sets *how
+much* light is removed via its luminance — black removes nothing, white at
+100% removes everything — and the result is never brighter than passthrough.
+The hue of `C` cannot selectively filter matching wavelengths; for a colored
+darkening effect, use Solid at partial intensity instead.
+
+**Note on color values:** the sliders, swatch, and hex readout are
+sRGB-encoded display values (what `#RRGGBB` normally means). They are
+converted to linear before being handed to the shader, which writes linear
+light to an sRGB render target — so the treated eye receives the same color
+the swatch shows, and recorded hex values describe the actual stimulus.
 
 ## Controls
 
@@ -46,7 +59,8 @@ cyan while darkening it).
   right; Both treats the entire visual field).
 - **Mode** — Solid / Additive / Subtractive.
 - **R / G / B sliders** — the custom color (shown as 0–255 and hex).
-- **Intensity** — effect strength from 0 to 100%.
+- **Intensity** — effect strength from 0 to 100%; 0% is always "no effect"
+  in every mode.
 
 All controls take effect live while the overlay is running.
 
@@ -57,8 +71,11 @@ hides the control window while the overlay runs, and summons it back —
 useful for both-eyes or solid sessions where the floating window would
 intrude on the visual field. PS VR2 Sense controllers pair with Apple
 Vision Pro on visionOS 26 or later (Settings → Bluetooth); any standard
-Bluetooth gamepad also works. The toggle is ignored while the overlay is
-stopped so the app never loses its last scene.
+Bluetooth gamepad also works. The hide branch of the toggle is ignored
+while the overlay is stopped or mid-transition, and if the overlay ends
+while the window is hidden (Stop, or Digital Crown), the control window is
+reopened automatically — both so the app is never left with zero scenes,
+which would suspend it and cut off controller input.
 
 ## Requirements
 
@@ -68,7 +85,9 @@ stopped so the app never loses its last scene.
   pairing (other Bluetooth gamepads work on visionOS 2)
 - A physical Apple Vision Pro is strongly recommended — the simulator
   renders a single view and shows no real passthrough, so the per-eye
-  behavior can only be evaluated on device.
+  behavior can only be evaluated on device. In the simulator the single
+  view is always treated regardless of the eye selection, so the overlay
+  is visible with the default settings.
 
 ## Build & run
 
@@ -83,6 +102,7 @@ never accesses camera imagery.
 - Hands may "punch through" the solid surface in the treated eye — that is
   system passthrough compositing behavior for upper limbs.
 - If the immersive space is closed with the Digital Crown, the app detects
-  the invalidated renderer and resets the Start/Stop button state.
+  the invalidated renderer, resets the Start/Stop button state, and reopens
+  the control window if it was hidden.
 - Prolonged monocular color stimulation can cause strong afterimages and
   temporary interocular color differences; take breaks.

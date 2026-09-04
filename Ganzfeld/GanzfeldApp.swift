@@ -14,12 +14,16 @@ struct GanzfeldApp: App {
 
         ImmersiveSpace(id: AppModel.immersiveSpaceID) {
             CompositorLayer(configuration: GanzfeldLayerConfiguration()) { [appModel] layerRenderer in
+                let token = NSObject()
+                Task { @MainActor in
+                    appModel.rendererStarted(token: token)
+                }
                 let renderer = Renderer(
                     layerRenderer: layerRenderer,
                     params: appModel.renderParams,
                     onInvalidated: {
                         Task { @MainActor in
-                            appModel.overlayActive = false
+                            appModel.rendererInvalidated(token: token)
                         }
                     }
                 )

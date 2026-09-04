@@ -9,9 +9,9 @@ import simd
 struct ShaderUniforms {
     var color: SIMD4<Float>
     var targetEye: UInt32
+    var viewOffset: UInt32 = 0
     var pad0: UInt32 = 0
     var pad1: UInt32 = 0
-    var pad2: UInt32 = 0
 }
 
 final class Renderer {
@@ -110,49 +110,109 @@ final class Renderer {
         let commandBuffer = commandQueue.makeCommandBuffer()!
         commandBuffer.label = "GanzfeldFrame"
 
+        let snapshot = params.withLock { $0 }
+        var targetEye = snapshot.targetEye
+        if drawable.views.count == 1 {
+            // Mono drawable (e.g. the simulator): there is no view index 1, so
+            // a Left/Right selection would otherwise render nothing. Always
+            // show the effect in the single view.
+            targetEye = TreatedEye.bothEyesTarget
+        }
+
+        switch layerRenderer.configuration.layout {
+        case .dedicated:
+            // Each view has its own non-array texture and needs its own pass.
+            for (viewIndex, view) in drawable.views.enumerated() {
+                let uniforms = ShaderUniforms(
+                    color: snapshot.rgba,
+                    targetEye: targetEye,
+                    viewOffset: UInt32(viewIndex)
+                )
+                encodePass(
+                    commandBuffer: commandBuffer,
+                    drawable: drawable,
+                    textureIndex: view.textureMap.textureIndex,
+                    rateMapIndex: viewIndex,
+                    viewports: [view.textureMap.viewport],
+                    renderTargetArrayLength: 0,
+                    amplificationCount: 1,
+                    uniforms: uniforms
+                )
+            }
+        default:
+            // Layered (or shared) layout: one pass, amplified across views.
+            let uniforms = ShaderUniforms(color: snapshot.rgba, targetEye: targetEye)
+            encodePass(
+                commandBuffer: commandBuffer,
+                drawable: drawable,
+                textureIndex: 0,
+                rateMapIndex: 0,
+                viewports: drawable.views.map { $0.textureMap.viewport },
+                renderTargetArrayLength: drawable.views.count,
+                amplificationCount: drawable.views.count,
+                uniforms: uniforms
+            )
+        }
+
+        drawable.encodePresent(commandBuffer: commandBuffer)
+        commandBuffer.commit()
+        frame.endSubmission()
+    }
+
+    private func encodePass(
+        commandBuffer: MTLCommandBuffer,
+        drawable: LayerRenderer.Drawable,
+        textureIndex: Int,
+        rateMapIndex: Int,
+        viewports: [MTLViewport],
+        renderTargetArrayLength: Int,
+        amplificationCount: Int,
+        uniforms: ShaderUniforms
+    ) {
         let renderPass = MTLRenderPassDescriptor()
-        renderPass.colorAttachments[0].texture = drawable.colorTextures[0]
+        renderPass.colorAttachments[0].texture = drawable.colorTextures[textureIndex]
         renderPass.colorAttachments[0].loadAction = .clear
         // Transparent clear: passthrough shows wherever nothing is drawn.
         renderPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         renderPass.colorAttachments[0].storeAction = .store
-        renderPass.depthAttachment.texture = drawable.depthTextures[0]
+        renderPass.depthAttachment.texture = drawable.depthTextures[textureIndex]
         renderPass.depthAttachment.loadAction = .clear
         renderPass.depthAttachment.clearDepth = 0  // reverse-Z: everything at infinity
         renderPass.depthAttachment.storeAction = .store
-        if let rateMap = drawable.rasterizationRateMaps.first {
-            renderPass.rasterizationRateMap = rateMap
+        if !drawable.rasterizationRateMaps.isEmpty {
+            let index = min(rateMapIndex, drawable.rasterizationRateMaps.count - 1)
+            renderPass.rasterizationRateMap = drawable.rasterizationRateMaps[index]
         }
-        let viewCount = drawable.views.count
-        if layerRenderer.configuration.layout == .layered {
-            renderPass.renderTargetArrayLength = viewCount
+        if renderTargetArrayLength > 0 {
+            renderPass.renderTargetArrayLength = renderTargetArrayLength
         }
 
         let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass)!
         encoder.label = "GanzfeldOverlayEncoder"
         encoder.setRenderPipelineState(pipelineState)
 
-        if viewCount > 1 {
-            var viewMappings = (0..<viewCount).map { _ in
-                // The shader writes the amplification index directly as the
-                // render target array index, so the mappings add no offset.
+        // With a rasterization rate map bound, viewport coordinates are
+        // logical rather than physical, so the drawable's per-view viewports
+        // must be set explicitly for the triangle to cover the full field.
+        encoder.setViewports(viewports)
+
+        if amplificationCount > 1 {
+            // The mappings supply both the render target array index and the
+            // viewport index for each amplified view; the vertex function
+            // outputs neither.
+            var viewMappings = (0..<amplificationCount).map { index in
                 MTLVertexAmplificationViewMapping(
-                    viewportArrayIndexOffset: 0,
-                    renderTargetArrayIndexOffset: 0
+                    viewportArrayIndexOffset: UInt32(index),
+                    renderTargetArrayIndexOffset: UInt32(index)
                 )
             }
-            encoder.setVertexAmplificationCount(viewCount, viewMappings: &viewMappings)
+            encoder.setVertexAmplificationCount(amplificationCount, viewMappings: &viewMappings)
         }
 
-        let snapshot = params.withLock { $0 }
-        var uniforms = ShaderUniforms(color: snapshot.rgba, targetEye: snapshot.targetEye)
+        var uniforms = uniforms
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<ShaderUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
-
-        drawable.encodePresent(commandBuffer: commandBuffer)
-        commandBuffer.commit()
-        frame.endSubmission()
     }
 }
 

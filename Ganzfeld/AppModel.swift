@@ -61,6 +61,15 @@ final class AppModel {
 
     var overlayActive = false
 
+    /// True while an open/dismiss of the immersive space is awaiting. Blocks
+    /// re-entrant toggles and the controller window toggle during transitions.
+    var overlayTransition = false
+
+    /// Identity of the renderer currently driving the immersive space, so a
+    /// stale renderer's invalidation (after a quick stop/restart) can't clear
+    /// state belonging to its successor.
+    @ObservationIgnored private var currentRendererToken: AnyObject?
+
     /// Tracked from ControlPanelView's onAppear/onDisappear.
     var controlWindowOpen = false
 
@@ -92,9 +101,30 @@ final class AppModel {
         if controlWindowOpen {
             // Never close the last scene: with no window and no immersive
             // space the app would suspend and controller input would stop.
-            guard overlayActive else { return }
+            // overlayTransition also blocks the window from being hidden
+            // while the immersive space is mid-dismissal.
+            guard overlayActive, !overlayTransition else { return }
             dismissControlWindow?(id: Self.controlWindowID)
         } else {
+            openControlWindow?(id: Self.controlWindowID)
+        }
+    }
+
+    /// Called (on the main actor) when a renderer session begins.
+    func rendererStarted(token: AnyObject) {
+        currentRendererToken = token
+    }
+
+    /// Called (on the main actor) when a renderer's layer is invalidated —
+    /// via Stop Overlay or the Digital Crown. Ignored for stale renderers.
+    func rendererInvalidated(token: AnyObject) {
+        guard currentRendererToken === token else { return }
+        currentRendererToken = nil
+        overlayActive = false
+        // If the control window was hidden for the session, bring it back:
+        // otherwise the app would be left with zero scenes, suspend, and
+        // stop receiving the controller input that could reopen it.
+        if !controlWindowOpen {
             openControlWindow?(id: Self.controlWindowID)
         }
     }
@@ -102,26 +132,47 @@ final class AppModel {
     /// The premultiplied color that lands in the layer for the treated eye.
     /// The system compositor blends the layer over passthrough as
     /// `result = layer.rgb + (1 - layer.a) * passthrough`.
+    ///
+    /// The sliders/hex readout are sRGB display values; the shader writes
+    /// linear light to an `_srgb` render target, so the color is converted to
+    /// linear here to make the eye receive exactly what the swatch shows.
+    /// In every mode, intensity 0 means "no effect" (untouched passthrough).
     private func pushParams() {
-        let c = SIMD3<Float>(Float(red), Float(green), Float(blue))
+        let c = SIMD3<Float>(
+            Self.srgbToLinear(Float(red)),
+            Self.srgbToLinear(Float(green)),
+            Self.srgbToLinear(Float(blue))
+        )
         let k = Float(intensity)
 
         let rgba: SIMD4<Float>
         switch mode {
         case .solid:
-            // result = k * C
-            rgba = SIMD4(c * k, 1)
+            // result = k * C + (1 - k) * passthrough
+            // Opaque color surface at full intensity, cross-fading back to
+            // passthrough as intensity drops.
+            rgba = SIMD4(c * k, k)
         case .additive:
             // result = passthrough + k * C
             rgba = SIMD4(c * k, 0)
         case .subtractive:
-            // result = (1 - k) * passthrough + k * (1 - C)
-            // Apps cannot read passthrough pixels, so true per-channel
-            // subtraction is impossible; this darkens toward the complement.
-            rgba = SIMD4((SIMD3<Float>(repeating: 1) - c) * k, k)
+            // result = (1 - k * Y(C)) * passthrough
+            // Removing specific channels from passthrough is impossible: the
+            // compositor's source-over blend can only attenuate all channels
+            // by one scalar alpha and add non-negative light, and apps cannot
+            // read passthrough pixels. So subtractive attenuates neutrally,
+            // weighted by the color's (linear, Rec. 709) luminance: black
+            // subtracts nothing, white at 100% removes all light, and the
+            // result can never be brighter than the passthrough it replaces.
+            let luminance = simd_dot(c, SIMD3<Float>(0.2126, 0.7152, 0.0722))
+            rgba = SIMD4(SIMD3<Float>(repeating: 0), k * luminance)
         }
 
         let params = RenderParams(rgba: rgba, targetEye: treatedEye.targetValue)
         renderParams.withLock { $0 = params }
+    }
+
+    private static func srgbToLinear(_ v: Float) -> Float {
+        v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
     }
 }
