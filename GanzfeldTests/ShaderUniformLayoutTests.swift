@@ -1,5 +1,4 @@
 import Testing
-import Metal
 import simd
 
 @testable import Ganzfeld
