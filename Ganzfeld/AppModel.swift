@@ -40,6 +40,18 @@ enum OverlayMode: String, CaseIterable, Identifiable {
     var label: String { rawValue.capitalized }
 }
 
+/// The outcome of a control-window toggle request.
+enum ControlWindowIntent: String, Equatable {
+    /// The window was asked to appear.
+    case show
+    /// The window was asked to go away for the duration of an overlay session.
+    case hide
+    /// The request was refused: hiding the window here would have left the
+    /// app with no scenes at all, or an immersive-space transition was in
+    /// flight and the overlay's real state was not yet settled.
+    case ignored
+}
+
 /// Snapshot of everything the render thread needs for a frame.
 /// `rgba` is the final premultiplied-alpha value written for the treated eye;
 /// the untreated eye is always written as (0, 0, 0, 0) so passthrough shows.
@@ -89,7 +101,7 @@ final class AppModel {
     init() {
         pushParams()
         controllerInput.onToggleUI = { [weak self] in
-            self?.toggleControlWindow()
+            _ = self?.toggleControlWindow()
         }
         controllerInput.start()
     }
@@ -97,16 +109,22 @@ final class AppModel {
     /// Show/hide the control window, driven by a paired game controller
     /// (e.g. PS VR2 Sense) so the UI can be dismissed during a session and
     /// summoned back without hand input.
-    func toggleControlWindow() {
+    ///
+    /// Returns the decision that was taken, so the "never leave the app with
+    /// zero scenes" rule is observable without a live window environment.
+    @discardableResult
+    func toggleControlWindow() -> ControlWindowIntent {
         if controlWindowOpen {
             // Never close the last scene: with no window and no immersive
             // space the app would suspend and controller input would stop.
             // overlayTransition also blocks the window from being hidden
             // while the immersive space is mid-dismissal.
-            guard overlayActive, !overlayTransition else { return }
+            guard overlayActive, !overlayTransition else { return .ignored }
             dismissControlWindow?(id: Self.controlWindowID)
+            return .hide
         } else {
             openControlWindow?(id: Self.controlWindowID)
+            return .show
         }
     }
 
@@ -170,6 +188,23 @@ final class AppModel {
 
         let params = RenderParams(rgba: rgba, targetEye: treatedEye.targetValue)
         renderParams.withLock { $0 = params }
+    }
+
+    /// The `#RRGGBB` readout for the current sliders. These are sRGB display
+    /// values — the same numbers the swatch shows — not the linear values
+    /// handed to the shader.
+    var hexString: String {
+        String(
+            format: "#%02X%02X%02X",
+            Self.displayByte(red),
+            Self.displayByte(green),
+            Self.displayByte(blue)
+        )
+    }
+
+    /// A 0...1 channel as the 0...255 integer shown in the UI.
+    static func displayByte(_ channel: Double) -> Int {
+        Int((min(max(channel, 0), 1) * 255).rounded())
     }
 
     private static func srgbToLinear(_ v: Float) -> Float {

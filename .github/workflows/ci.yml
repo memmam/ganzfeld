@@ -1,0 +1,219 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A push to a PR branch triggers both events; sharing one group means the
+# second run cancels the first instead of paying for the same work twice.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheap Linux gate. Everything below costs macOS minutes, so anything that
+  # can be decided from the sources alone is decided here first.
+  project-integrity:
+    name: Project integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the Xcode project and shared scheme
+        run: python3 .github/scripts/check_project.py
+
+      - name: Check the Metal/Swift shader contract
+        run: python3 .github/scripts/check_shader_contract.py
+
+      - name: Lint the workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" -color
+
+      - name: Check that build products are not committed
+        run: |
+          set -euo pipefail
+          offenders=$(git ls-files | grep -E '(^|/)(build|DerivedData|\.build)/|\.xcuserstate$|xcuserdata/' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::build products are committed to the repository:"
+            echo "$offenders"
+            exit 1
+          fi
+          echo "No build products committed."
+
+  # The suite itself, on a real visionOS simulator.
+  unit-tests:
+    name: Unit tests (visionOS Simulator)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i -E 'visionos|xros' || echo "no visionOS SDK listed"
+
+      - name: Resolve a visionOS simulator
+        id: simulator
+        run: echo "udid=$(python3 .github/scripts/visionos_simulator.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        env:
+          NSUnbufferedIO: YES
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Ganzfeld.xcodeproj \
+            -scheme Ganzfeld \
+            -configuration Debug \
+            -destination "platform=visionOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult \
+            -enableCodeCoverage YES \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee xcodebuild-test.log
+
+      - name: Summarise coverage
+        if: success()
+        run: |
+          xcrun xccov view --report --only-targets TestResults.xcresult \
+            | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Report compiler warnings
+        if: always()
+        run: |
+          warnings=$(grep -E ': (warning|note): ' xcodebuild-test.log | sort -u || true)
+          if [ -n "$warnings" ]; then
+            {
+              echo '### Compiler warnings'
+              echo '```'
+              echo "$warnings"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No compiler warnings.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            TestResults.xcresult
+            xcodebuild-test.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  # The app ships to a device, not a simulator, and the device SDK is a
+  # different compile. Both supported Xcode generations are covered.
+  device-build:
+    name: Device build (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Xcode 16 is the documented minimum; macos-26 is where the toolchain
+        # is heading. A build that only works on one of them is a bug.
+        runner: [macos-15, macos-26]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: xcodebuild -version
+
+      - name: Build for visionOS
+        env:
+          NSUnbufferedIO: YES
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Ganzfeld.xcodeproj \
+            -scheme Ganzfeld \
+            -configuration Release \
+            -destination 'generic/platform=visionOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee xcodebuild-device.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-build-log-${{ matrix.runner }}
+          path: xcodebuild-device.log
+          retention-days: 7
+
+  # Warnings-as-errors on the shader, which xcodebuild otherwise compiles
+  # quietly, plus an advisory formatting report.
+  code-quality:
+    name: Code quality
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile the Metal shader with warnings as errors
+        run: |
+          set -euo pipefail
+          xcrun --sdk xros metal -Wall -Werror \
+            -c Ganzfeld/Shaders.metal \
+            -o "${RUNNER_TEMP}/Shaders.air"
+          echo "Shaders.metal compiles clean for the device SDK."
+
+      - name: Compile the Metal shader for the simulator SDK
+        run: |
+          set -euo pipefail
+          xcrun --sdk xrsimulator metal -Wall -Werror \
+            -c Ganzfeld/Shaders.metal \
+            -o "${RUNNER_TEMP}/Shaders-sim.air"
+          echo "Shaders.metal compiles clean for the simulator SDK."
+
+      - name: Formatting report (advisory)
+        run: |
+          if xcrun --find swift-format >/dev/null 2>&1; then
+            xcrun swift-format lint --recursive --parallel Ganzfeld GanzfeldTests \
+              2>&1 | tee "${RUNNER_TEMP}/format.txt" || true
+            if [ -s "${RUNNER_TEMP}/format.txt" ]; then
+              {
+                echo '### swift-format findings (advisory)'
+                echo '```'
+                cat "${RUNNER_TEMP}/format.txt"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo 'swift-format found nothing to report.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo 'swift-format is not in this toolchain; skipping.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # One green check for branch protection to require.
+  ci:
+    name: CI
+    if: always()
+    needs: [project-integrity, unit-tests, device-build, code-quality]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job did not succeed
+        run: |
+          echo "project-integrity: ${{ needs.project-integrity.result }}"
+          echo "unit-tests:        ${{ needs.unit-tests.result }}"
+          echo "device-build:      ${{ needs.device-build.result }}"
+          echo "code-quality:      ${{ needs.code-quality.result }}"
+          [ "${{ needs.project-integrity.result }}" = "success" ] \
+            && [ "${{ needs.unit-tests.result }}" = "success" ] \
+            && [ "${{ needs.device-build.result }}" = "success" ] \
+            && [ "${{ needs.code-quality.result }}" = "success" ]

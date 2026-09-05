@@ -15,3 +15,8 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Test and CI output
+*.xcresult
+*.xcarchive
+xcodebuild-*.log
