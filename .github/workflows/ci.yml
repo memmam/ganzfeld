@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the Xcode project and shared scheme
         run: python3 .github/scripts/check_project.py
@@ -57,7 +57,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Show the toolchain
         run: |
@@ -128,7 +128,7 @@ jobs:
         # is heading. A build that only works on one of them is a bug.
         runner: [macos-15, macos-26]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Show the toolchain
         run: xcodebuild -version
@@ -163,7 +163,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Compile the Metal shader with warnings as errors
         run: |
